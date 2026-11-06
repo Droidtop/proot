@@ -1,5 +1,6 @@
 #include <errno.h>     /* E*, */
-#include <signal.h>    /* SIGSYS, */
+#include <signal.h>    /* SIGSYS, SIGCHLD, */
+#include <sched.h>     /* CLONE_VM, CLONE_VFORK, */
 #include <unistd.h>    /* getpgid, */
 #include <utime.h>     /* utimbuf, */
 #include <sys/vfs.h>   /* statfs64 */
@@ -194,6 +195,25 @@ static int handle_seccomp_event_common(Tracee *tracee)
 	case PR_accept:
 		set_sysnum(tracee, PR_accept4);
 		poke_reg(tracee, SYSARG_4, 0);
+		restart_syscall_after_seccomp(tracee);
+		break;
+
+	/* fork(2) and vfork(2) exist as syscalls on x86 and x86_64 only,
+	 * and Android's app seccomp policy does not allow them there
+	 * (bionic forks with clone), so a guest whose libc forks with the
+	 * raw syscall (musl does on x86_64) could never start a child.
+	 * Restart each as the clone(2) it is defined to be:
+	 * fork is clone(SIGCHLD, 0, 0, 0, 0), vfork adds CLONE_VM and
+	 * CLONE_VFORK.  The restarted clone goes through the ordinary
+	 * clone handling, so the child is traced as usual.  */
+	case PR_fork:
+	case PR_vfork:
+		poke_reg(tracee, SYSARG_1, (sysnum == PR_vfork ? CLONE_VM | CLONE_VFORK : 0) | SIGCHLD);
+		poke_reg(tracee, SYSARG_2, 0);
+		poke_reg(tracee, SYSARG_3, 0);
+		poke_reg(tracee, SYSARG_4, 0);
+		poke_reg(tracee, SYSARG_5, 0);
+		set_sysnum(tracee, PR_clone);
 		restart_syscall_after_seccomp(tracee);
 		break;
 
